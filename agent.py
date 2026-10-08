@@ -29,6 +29,16 @@ MAX_RETRIES = 3  # max re-generations when the evaluation score is too low
 # ---- Credentials ----
 # Prefer environment variables (Streamlit secrets are exported to them by streamlit_app.py);
 # fall back to a local config.json for running from the terminal.
+try:  # when running on Streamlit, pick credentials up from its secrets
+    import streamlit as st
+
+    if "OPENAI_API_KEY" in st.secrets:
+        os.environ.setdefault("OPENAI_API_KEY", st.secrets["OPENAI_API_KEY"])
+    if "OPENAI_API_BASE" in st.secrets and st.secrets["OPENAI_API_BASE"]:
+        os.environ.setdefault("OPENAI_BASE_URL", st.secrets["OPENAI_API_BASE"])
+except Exception:
+    pass  # streamlit not installed or no secrets file: fall through
+
 if not os.environ.get("OPENAI_API_KEY") and os.path.exists(CONFIG_PATH):
     with open(CONFIG_PATH, "r") as file:
         config = json.load(file)
