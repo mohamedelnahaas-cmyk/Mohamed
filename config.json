@@ -1,5 +1,5 @@
 {
-    "HF_TOKEN": "your-hugging-face-token"
+    "HF_TOKEN": "your-hugging-face-token",
     "OPENAI_API_KEY": "gl-U2FsdGVkX19EKLWqBbuUmhkpfo9Fd30wMWpFttgsPS5LfrThg8fff2f3gZhjbCsW",
     "OPENAI_API_BASE": "https://aibe.mygreatlearning.com/openai/v1"
 }
