@@ -10,9 +10,12 @@ import pandas as pd
 import streamlit as st
 
 # Export Streamlit secrets to env vars *before* importing agent (it builds the LLMs on import).
-for key in ("OPENAI_API_KEY", "OPENAI_API_BASE"):
-    if key in st.secrets and st.secrets[key]:
-        os.environ["OPENAI_BASE_URL" if key == "OPENAI_API_BASE" else key] = st.secrets[key]
+try:
+    for key in ("OPENAI_API_KEY", "OPENAI_API_BASE"):
+        if key in st.secrets and st.secrets[key]:
+            os.environ["OPENAI_BASE_URL" if key == "OPENAI_API_BASE" else key] = st.secrets[key]
+except Exception:
+    pass  # no secrets file (local run): agent.py falls back to config.json
 
 st.set_page_config(page_title="Kartify Support", page_icon="🛒")
 
@@ -28,7 +31,7 @@ st.title("🛒 Kartify Order Support")
 
 # ---- Step 1: identify customer and order ----
 if "state" not in st.session_state:
-    cust_id = st.text_input("Customer ID", placeholder="e.g. C1014").strip()
+    cust_id = st.text_input("Customer ID", placeholder="e.g. C1014").strip().upper()
     if cust_id:
         with sqlite3.connect(agent.DB_PATH) as conn:
             orders = pd.read_sql_query(
@@ -70,7 +73,12 @@ if query := st.chat_input("Ask about your order"):
     state["query"] = query
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            state, ended = agent.process_query(state)
+            try:
+                state, ended = agent.process_query(state)
+            except Exception as e:
+                st.error(f"Sorry, something went wrong: {type(e).__name__}: {e}")
+                st.session_state.messages.pop()  # let the user retry the same question
+                st.stop()
         st.write(state["final_response"])
     st.session_state.state = state
     st.session_state.ended = ended
