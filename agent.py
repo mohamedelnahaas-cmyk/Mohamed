@@ -27,11 +27,14 @@ CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 MAX_RETRIES = 3  # max re-generations when the evaluation score is too low
 
 # ---- Credentials ----
-with open(CONFIG_PATH, "r") as file:
-    config = json.load(file)
-os.environ["OPENAI_API_KEY"] = config["OPENAI_API_KEY"]
-if config.get("OPENAI_API_BASE"):
-    os.environ["OPENAI_BASE_URL"] = config["OPENAI_API_BASE"]
+# Prefer environment variables (Streamlit secrets are exported to them by streamlit_app.py);
+# fall back to a local config.json for running from the terminal.
+if not os.environ.get("OPENAI_API_KEY") and os.path.exists(CONFIG_PATH):
+    with open(CONFIG_PATH, "r") as file:
+        config = json.load(file)
+    os.environ["OPENAI_API_KEY"] = config["OPENAI_API_KEY"]
+    if config.get("OPENAI_API_BASE"):
+        os.environ["OPENAI_BASE_URL"] = config["OPENAI_API_BASE"]
 
 # ---- LLMs ----
 llm = ChatOpenAI(model_name="gpt-4o-mini")        # order agent (tool calling)
@@ -282,7 +285,8 @@ Response: {state["final_response"]}
 
 
 def memory_node(state: OrderState):
-    conversation_memory.add({"user": state["query"], "assistant": state["final_response"]})
+    # Use the per-conversation history in the state (not the global) so web sessions stay separate.
+    state["history"].append({"user": state["query"], "assistant": state["final_response"]})
     return state
 
 
@@ -380,6 +384,49 @@ def build_graph():
 
 
 order_graph = build_graph()
+
+
+def new_state(cust_id, order_id) -> OrderState:
+    return {
+        "cust_id": cust_id,
+        "order_id": order_id,
+        "order_context": "",
+        "query": "",
+        "raw_agent_response": "",
+        "final_response": "",
+        "history": [],
+        "intent": "",
+        "evaluation": {},
+        "guard_result": "",
+        "conv_guard_result": "",
+        "retries": 0,
+    }
+
+
+def process_query(state: OrderState):
+    """Run one user turn through the same pipeline as the graph (no input() calls).
+
+    state["query"] must already be set. Returns (state, conversation_ended).
+    """
+    state = intent_node(state)
+    if router_node(state) == "exit_node":
+        return exit_node(state), True
+
+    while True:
+        state.update(order_agent_node(state))
+        state = evaluation_node(state)
+        if retry_router(state) == "safety_check":
+            break
+
+    state = guard_node(state)
+    if guard_router(state) == "exit_node":
+        return exit_node(state), True
+
+    state = memory_node(state)
+    state = conversational_guard_node(state)
+    if conv_guard_router(state) == "exit_node":
+        return exit_node(state), True
+    return state, False
 
 
 def run_chatbot(cust_id, order_id):
