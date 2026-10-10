@@ -5,6 +5,8 @@ Requirements (install once, outside this file):
         langchain-openai==0.2.14 langchain-community==0.3.14 pandas==2.2.2 numpy==2.0.2
 
 Needs config.json (OPENAI_API_KEY, OPENAI_API_BASE) and kartify.db next to this file.
+Optional: set TYPESAFE_API_KEY to run intent, evaluation and guard judgments on TypeSafe Jev
+(see jev.py); without it, or if Jev fails, those steps use the GPT prompts below.
 """
 import json
 import os
@@ -18,6 +20,8 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
+
+import jev
 
 warnings.filterwarnings("ignore")
 
@@ -36,6 +40,8 @@ try:  # when running on Streamlit, pick credentials up from its secrets
         os.environ.setdefault("OPENAI_API_KEY", st.secrets["OPENAI_API_KEY"])
     if "OPENAI_API_BASE" in st.secrets and st.secrets["OPENAI_API_BASE"]:
         os.environ.setdefault("OPENAI_BASE_URL", st.secrets["OPENAI_API_BASE"])
+    if "TYPESAFE_API_KEY" in st.secrets and st.secrets["TYPESAFE_API_KEY"]:
+        os.environ.setdefault("TYPESAFE_API_KEY", st.secrets["TYPESAFE_API_KEY"])
 except Exception:
     pass  # streamlit not installed or no secrets file: fall through
 
@@ -48,7 +54,18 @@ if not os.environ.get("OPENAI_API_KEY") and os.path.exists(CONFIG_PATH):
 
 # ---- LLMs ----
 llm = ChatOpenAI(model_name="gpt-4o-mini")        # order agent (tool calling)
-evaluate_llm = ChatOpenAI(model_name="gpt-4o")    # evaluation, intent, guardrails
+evaluate_llm = ChatOpenAI(model_name="gpt-4o")    # evaluation, intent, guardrails (fallback when Jev is off)
+
+
+def try_jev(judgment, *args):
+    """Run a TypeSafe Jev judgment; None means "use the GPT prompt instead"."""
+    if not jev.enabled():
+        return None
+    try:
+        return judgment(*args)
+    except Exception as e:  # service/network/auth failure: keep the chat working on GPT
+        print(f"Jev {judgment.__name__} failed, falling back to GPT: {type(e).__name__}: {e}")
+        return None
 
 
 # ---- State ----
@@ -182,6 +199,11 @@ def user_input_node(state: OrderState):
 
 
 def intent_node(state: OrderState):
+    state["retries"] = 0
+    intent = try_jev(jev.classify_intent, state["query"])
+    if intent is not None:
+        state["intent"] = intent
+        return state
     prompt = f""" You are an intent classifier for customer service queries. Your task is to classify the user's query into one of the following 5 categories based on tone, completeness, and content.
 
 Return only the numeric category ID (0, 1, 2, 3, 4) as the output. Do not include any explanation or extra text.
@@ -222,7 +244,6 @@ Read the user query and return just the category number (0, 1, 2, 3, or 4). Do n
 
 User Query:  {state['query']} """
     state["intent"] = evaluate_llm.invoke([HumanMessage(content=prompt)]).content.strip()
-    state["retries"] = 0
     return state
 
 
@@ -247,6 +268,11 @@ def extract_json_from_llm(text):
 
 
 def evaluation_node(state: OrderState):
+    state["retries"] = state.get("retries", 0) + 1
+    scores = try_jev(jev.evaluate_response, state["order_context"], state["query"], state["final_response"])
+    if scores is not None:
+        state["evaluation"] = scores
+        return state
     prompt = f"""
 Evaluate the assistant's response to a customer query using the provided order context.
 
@@ -274,11 +300,17 @@ Return ONLY JSON:
         state["evaluation"] = extract_json_from_llm(raw)
     except Exception:
         state["evaluation"] = {"groundedness": 0.0, "precision": 0.0}
-    state["retries"] = state.get("retries", 0) + 1
     return state
 
 
 def guard_node(state: OrderState):
+    state["guard_result"] = try_jev(jev.guard_response, state["final_response"]) or _gpt_guard(state)
+    if "BLOCK" in state["guard_result"].upper():
+        state["final_response"] = "Your request is being forwarded to a customer support specialist."
+    return state
+
+
+def _gpt_guard(state: OrderState) -> str:
     prompt = f"""
 You are a content safety assistant. Your task is to classify if the assistant's response is appropriate.
 If the message contains:
@@ -292,10 +324,7 @@ Return: BLOCK
 Otherwise, return: SAFE
 Response: {state["final_response"]}
 """
-    state["guard_result"] = evaluate_llm.invoke([HumanMessage(content=prompt)]).content.strip()
-    if "BLOCK" in state["guard_result"].upper():
-        state["final_response"] = "Your request is being forwarded to a customer support specialist."
-    return state
+    return evaluate_llm.invoke([HumanMessage(content=prompt)]).content.strip()
 
 
 def memory_node(state: OrderState):
@@ -305,6 +334,17 @@ def memory_node(state: OrderState):
 
 
 def conversational_guard_node(state: OrderState):
+    result = try_jev(jev.guard_conversation, state["history"])
+    if result is not None:
+        state["conv_guard_result"] = result
+    else:
+        state["conv_guard_result"] = _gpt_conversation_guard(state)
+    if "BLOCK" in state["conv_guard_result"].upper():
+        state["final_response"] = "Your request is being forwarded to a customer support specialist."
+    return state
+
+
+def _gpt_conversation_guard(state: OrderState) -> str:
     prompt = f"""
 You are a conversation monitor AI. Review the following conversation between a user and an assistant. Detect if the assistant:
 
@@ -319,13 +359,10 @@ Conversation:
 {state["history"]}
 """
     try:
-        state["conv_guard_result"] = evaluate_llm.invoke([HumanMessage(content=prompt)]).content.strip()
+        return evaluate_llm.invoke([HumanMessage(content=prompt)]).content.strip()
     except Exception as e:  # this check is advisory: if the API refuses it, don't kill the chat
         print(f"conversational guard skipped: {type(e).__name__}: {e}")
-        state["conv_guard_result"] = "SAFE"
-    if "BLOCK" in state["conv_guard_result"].upper():
-        state["final_response"] = "Your request is being forwarded to a customer support specialist."
-    return state
+        return "SAFE"
 
 
 GREETING_REPLY = "Hello! How can I help you with your order today?"
