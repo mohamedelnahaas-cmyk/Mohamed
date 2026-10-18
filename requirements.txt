@@ -4,4 +4,4 @@ langchain-core
 langchain-openai
 openai
 pandas
-typesafe-sdk
+typesafe-sdk>=0.7.5

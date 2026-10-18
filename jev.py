@@ -16,6 +16,10 @@ try:
 except ImportError:  # SDK not installed: Jev stays disabled
     TypeSafeClient = None
 
+# Opt-in for TypeSafe's experimental image inputs and Box questions (Jev 1.14 preview).
+# Text-only requests are unaffected; images also need a vision model (TYPESAFE_DEFAULT_MODEL).
+HEADERS = {"TypeSafe-Danger-Zone-Images": "true"}
+
 ESCALATION_MIN_PROB = 0.65  # same bar the GPT intent prompt states for escalation
 BLOCK_MIN_PROB = 0.5  # a guard condition counts as present at or above this
 
@@ -32,7 +36,7 @@ def _ask(state, questions):
     global _client
     if _client is None:
         # Reads TYPESAFE_API_KEY, TYPESAFE_BASE_URL and TYPESAFE_DEFAULT_MODEL from the environment.
-        _client = TypeSafeClient()
+        _client = TypeSafeClient(headers=HEADERS)
     return _client.system_one(state=state, questions=questions)
 
 
