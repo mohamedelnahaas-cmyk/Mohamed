@@ -1,7 +1,7 @@
 """Streamlit front end for the Kartify order chatbot.
 
 Run locally:  streamlit run streamlit_app.py
-On Streamlit Cloud set secrets OPENAI_API_KEY (and optionally OPENAI_API_BASE).
+On Streamlit Cloud set secrets OPENAI_API_KEY (and optionally OPENAI_API_BASE, TYPESAFE_API_KEY).
 """
 import os
 import sqlite3
@@ -11,7 +11,7 @@ import streamlit as st
 
 # Export Streamlit secrets to env vars *before* importing agent (it builds the LLMs on import).
 try:
-    for key in ("OPENAI_API_KEY", "OPENAI_API_BASE"):
+    for key in ("OPENAI_API_KEY", "OPENAI_API_BASE", "TYPESAFE_API_KEY"):
         if key in st.secrets and st.secrets[key]:
             os.environ["OPENAI_BASE_URL" if key == "OPENAI_API_BASE" else key] = st.secrets[key]
 except Exception:
